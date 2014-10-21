@@ -1,0 +1,32 @@
+﻿ctrl - y 	добавить поле
+ctrl - w	сохранить
+
+Свойства таблиц:
+Exclusive -> True (Чтобы доступ был только у нашего прожекта/проги)
+ReadOnly -> True запрет записи в табличку
+Visible -> False невидимое окно
+
+Свойства форм:
+set deleted on		не отображать удалённые
+set date british	использовать британский формат даты
+set talk off		отключение уведомлений
+set safety off		не спрашивать замену файлов
+
+
+Свойства кнопочек:
+go top			курсор в первую запись
+go bottom		курсор в последнюю запись
+
+
+Свойства data environment:
+initial selected alianse -> наша табличка будет главной 
+
+Свойства exe
+CLEAR EVENTS 		очистка событий
+SET STATUS OFF 		отключить показ статуса (снизу) 
+SET CENTURY ON 		для показа 2013, вместо 13
+DO FORM form_main  	оператор вызова формы
+READ events		считать и реагировать на события
+CLEAR WINDOWS		очистка окон
+
+
