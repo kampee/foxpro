@@ -1,0 +1,755 @@
+
+**__RI_HEADER!@ Do NOT REMOVE or MODIFY this line!!!! @!__RI_HEADER**
+procedure RIDELETE
+local llRetVal
+llRetVal=.t.
+ IF (ISRLOCKED() and !deleted()) OR !RLOCK()
+    llRetVal=.F.
+  ELSE
+    IF !deleted()
+      DELETE
+      IF CURSORGETPROP('BUFFERING') > 1
+      	=TABLEUPDATE()
+      ENDIF
+    ENDIF not already deleted
+  ENDIF
+  UNLOCK RECORD (RECNO())
+  llRetVal=pnerror=0
+RETURN llRetVal
+
+procedure RIUPDATE
+lparameters tcFieldName,tcNewValue,tcCascadeParent
+local llRetVal
+llRetVal=.t.
+ IF ISRLOCKED() OR !RLOCK()
+    llRetVal=.F.
+  ELSE
+    IF EVAL(tcFieldName)<>tcNewValue
+      PRIVATE pcCascadeParent
+      pcCascadeParent=upper(iif(type("tcCascadeParent")<>"C","",tcCascadeParent))
+      REPLACE (tcFieldName) WITH tcNewValue
+      IF CURSORGETPROP('BUFFERING') > 1
+      	=TABLEUPDATE()
+      ENDIF
+    ENDIF values don't already match
+  ENDIF it's locked already, or I was able to lock it
+  UNLOCK RECORD (RECNO())
+  llRetVal=pnerror=0
+return llRetVal
+
+procedure rierror
+parameters tnErrNo,tcMessage,tcCode,tcProgram
+local lnErrorRows,lnXX
+lnErrorRows=alen(gaErrors,1)
+if type('gaErrors[lnErrorRows,1]')<>"L"
+  dimension gaErrors[lnErrorRows+1,alen(gaErrors,2)]
+  lnErrorRows=lnErrorRows+1
+endif
+gaErrors[lnErrorRows,1]=tnErrNo
+gaErrors[lnErrorRows,2]=tcMessage
+gaErrors[lnErrorRows,3]=tcCode
+gaErrors[lnErrorRows,4]=""
+lnXX=1
+do while !empty(program(lnXX))
+  gaErrors[lnErrorRows,4]=gaErrors[lnErrorRows,4]+","+;
+  program(lnXX)
+  lnXX=lnXX+1
+enddo
+gaErrors[lnErrorRows,5]=pcParentDBF
+gaErrors[lnErrorRows,6]=pnParentRec
+gaErrors[lnErrorRows,7]=pcParentID
+gaErrors[lnErrorRows,8]=pcParentExpr
+gaErrors[lnErrorRows,9]=pcChildDBF
+gaErrors[lnErrorRows,10]=pnChildRec
+gaErrors[lnErrorRows,11]=pcChildID
+gaErrors[lnErrorRows,12]=pcChildExpr
+return tnErrNo
+
+
+PROCEDURE riopen
+PARAMETERS tcTable,tcOrder
+
+LOCAL lcCurWkArea,lcNewWkArea,lnInUseSpot,lnOccurs,lnOccurance
+lnInUseSpot=0
+lnOccurs = OCCURS(UPPER(tcTable)+"*",UPPER(pcRIcursors))
+FOR lnOccurance = 1 TO lnOccurs
+	lnInUseSpot=ATC(tcTable+"*",pcRIcursors,lnOccurance)
+	IF ISDIGIT(SUBSTR(pcRIcursors,lnInUseSpot-1,1)) OR;
+		 EMPTY(SUBSTR(pcRIcursors,lnInUseSpot-1,1))
+		EXIT
+	ENDIF
+	lnInUseSpot=0
+ENDFOR
+
+IF lnInUseSpot=0
+  lcCurWkArea=select()
+  SELECT 0
+  lcNewWkArea=select()
+  IF NOT EMPTY(tcOrder)
+    USE (tcTable) AGAIN ORDER (tcOrder) ;
+      ALIAS ("__ri"+LTRIM(STR(SELECT()))) share
+  ELSE
+    USE (tcTable) AGAIN ALIAS ("__ri"+LTRIM(STR(SELECT()))) share
+  ENDIF
+  if pnerror=0
+    pcRIcursors=pcRIcursors+upper(tcTable)+"?"+STR(SELECT(),5)
+  else
+    lcNewWkArea=0
+  endif something bad happened while attempting to open the file
+ELSE
+  lcNewWkArea=val(substr(pcRIcursors,lnInUseSpot+len(tcTable)+1,5))
+  pcRIcursors = strtran(pcRIcursors,upper(tcTable)+"*"+str(lcNewWkArea,5),;
+    upper(tcTable)+"?"+str(lcNewWkArea,5))
+  IF NOT EMPTY(tcOrder)
+    SET ORDER TO (tcOrder) IN (lcNewWkArea)
+  ENDIF sent an order
+  if pnerror<>0
+    lcNewWkArea=0
+  endif something bad happened while setting order
+ENDIF
+RETURN (lcNewWkArea)
+
+
+PROCEDURE riend
+PARAMETERS tlSuccess
+local lnXX,lnSpot,lcWorkArea
+IF tlSuccess
+  END TRANSACTION
+ELSE
+  SET DELETED OFF
+  ROLLBACK
+  SET DELETED ON
+ENDIF
+IF EMPTY(pcRIolderror)
+  ON ERROR
+ELSE
+  ON ERROR &pcRIolderror.
+ENDIF
+FOR lnXX=1 TO occurs("*",pcRIcursors)
+  lnSpot=atc("*",pcRIcursors,lnXX)+1
+  USE IN (VAL(substr(pcRIcursors,lnSpot,5)))
+ENDFOR
+IF pcOldCompat = "ON"
+	SET COMPATIBLE ON
+ENDIF
+IF pcOldDele="OFF"
+  SET DELETED OFF
+ENDIF
+IF pcOldExact="ON"
+  SET EXACT ON
+ENDIF
+IF pcOldTalk="ON"
+  SET TALK ON
+ENDIF
+do case
+  case empty(pcOldDBC)
+    set data to
+  case pcOldDBC<>DBC()
+    set data to (pcOldDBC)
+endcase
+RETURN .T.
+
+
+PROCEDURE rireuse
+* rireuse.prg
+PARAMETERS tcTableName,tcWkArea
+pcRIcursors = strtran(pcRIcursors,upper(tcTableName)+"?"+str(tcWkArea,5),;
+  upper(tcTableName)+"*"+str(tcWkArea,5))
+RETURN .t.
+
+********************************************************************************
+** "Referential integrity delete trigger for" books
+PROCEDURE __RI_DELETE_books
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("LIBRARY")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcParentWkArea
+LOCAL llDelHeaderarea
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+STORE BOOK_NUMBER TO lcParentID,pcParentID
+pcParentExpr="BOOK_NUMBER"
+lcChildWkArea=riopen("orders","booknumber")
+IF lcChildWkArea<=0
+  IF _triggerlevel=1
+    DO riend WITH .F.
+  ENDIF at the end of the highest trigger level
+  RETURN .F.
+ENDIF not able to open the child work area
+pcChildDBF=dbf(lcChildWkArea)
+llRetVal=!SEEK(lcParentID,lcChildWkArea)
+SELECT (lcChildWkArea)
+pnChildRec=recno()
+pcChildID=BOOK_NUMBER
+pcChildExpr="BOOK_NUMBER"
+IF !llRetVal
+  pnError = rierror(-1,"Delete restrict rule violated.","","")
+ENDIF
+=rireuse("orders",lcChildWkArea)
+IF NOT llRetVal
+  IF _triggerlevel=1
+    DO riend WITH llRetVal
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN llRetVal
+ENDIF
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Delete trigger for" books
+********************************************************************************
+
+********************************************************************************
+procedure __RI_UPDATE_books
+** "Referential integrity update trigger for" books
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("LIBRARY")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcOldParentID && previous parent id value
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcChildID && child's value to be sought in parent
+LOCAL lcOldChildID && old child id value
+LOCAL lcParentWkArea && parentwork area handle returned by riopen
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("BOOK_NUMBER")
+pcParentID=lcOldParentID
+pcParentExpr="BOOK_NUMBER"
+lcParentID=BOOK_NUMBER
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("orders")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SET ORDER TO booknumber IN (lcChildWkArea)
+  llRetVal=!SEEK(lcOldParentID,lcChildWkArea)
+  pnChildRec=recno()
+  pcChildID=BOOK_NUMBER
+  pcChildExpr="BOOK_NUMBER"
+  IF !llRetVal
+    pnError = rierror(-1,"Update restrict rule violated.","","")
+  ENDIF
+  =rireuse("orders",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Update trigger for" books
+********************************************************************************
+
+********************************************************************************
+procedure __RI_UPDATE_orders
+** "Referential integrity update trigger for" orders
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("LIBRARY")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcOldParentID && previous parent id value
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcChildID && child's value to be sought in parent
+LOCAL lcOldChildID && old child id value
+LOCAL lcParentWkArea && parentwork area handle returned by riopen
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcChildWkArea=select()
+IF _triggerlevel=1 or type("pccascadeparent")#"C" or (NOT pccascadeparent=="READERS")
+  SELECT (lcChildWkArea)
+  lcChildID=CARD_NUMBER
+  lcOldChildID=oldval("CARD_NUMBER")
+  pcChildDBF=dbf(lcChildWkArea)
+  pnChildRec=recno(lcChildWkArea)
+  pcChildID=lcOldChildID
+  pcChildExpr="CARD_NUMBER"
+  if isnull(lcChildID) or isnull(lcOldChildID) or lcChildID <> lcOldChildID
+    lcParentWkArea=riopen("readers","cardnumber")
+    IF lcParentWkArea<=0
+      IF _triggerlevel=1
+        DO riend WITH .F.
+      ENDIF at the end of the highest trigger level
+      SELECT (lcStartArea)
+      RETURN .F.
+    ENDIF not able to open the child work area
+    pcParentDBF=dbf(lcParentWkArea)
+    llRetVal=SEEK(lcChildID,lcParentWkArea)
+    pnParentRec=recno(lcParentWkArea)
+    if llRetVal and not (isrlocked(pnParentRec, lcParentWkArea) or ;
+      isflocked(lcParentWkArea))
+      if rlock(lcParentWkArea)
+        unlock record pnParentRec in lcParentWkArea
+      else
+        =rireuse("tparen",lcParentWkArea)
+        pnError = rierror(-1,"Insert restrict rule violated.","","")
+        IF _triggerlevel=1
+          DO riend WITH llRetVal
+        ENDIF at the end of the highest trigger level
+        SELECT (lcStartArea)
+        RETURN llRetVal
+      endif
+    endif
+    =rireuse("readers",lcParentWkArea)
+    IF NOT llRetVal
+      pnError = rierror(-1,"Insert restrict rule violated.","","")
+      IF _triggerlevel=1
+        DO riend WITH llRetVal
+      ENDIF at the end of the highest trigger level
+      SELECT (lcStartArea)
+      RETURN llRetVal
+    ENDIF no parent
+  ENDIF this value was changed
+ENDIF not part of a cascade from "readers"
+IF _triggerlevel=1 or type("pccascadeparent")#"C" or (NOT pccascadeparent=="BOOKS")
+  SELECT (lcChildWkArea)
+  lcChildID=BOOK_NUMBER
+  lcOldChildID=oldval("BOOK_NUMBER")
+  pcChildDBF=dbf(lcChildWkArea)
+  pnChildRec=recno(lcChildWkArea)
+  pcChildID=lcOldChildID
+  pcChildExpr="BOOK_NUMBER"
+  if isnull(lcChildID) or isnull(lcOldChildID) or lcChildID <> lcOldChildID
+    lcParentWkArea=riopen("books","booknumber")
+    IF lcParentWkArea<=0
+      IF _triggerlevel=1
+        DO riend WITH .F.
+      ENDIF at the end of the highest trigger level
+      SELECT (lcStartArea)
+      RETURN .F.
+    ENDIF not able to open the child work area
+    pcParentDBF=dbf(lcParentWkArea)
+    llRetVal=SEEK(lcChildID,lcParentWkArea)
+    pnParentRec=recno(lcParentWkArea)
+    if llRetVal and not (isrlocked(pnParentRec, lcParentWkArea) or ;
+      isflocked(lcParentWkArea))
+      if rlock(lcParentWkArea)
+        unlock record pnParentRec in lcParentWkArea
+      else
+        =rireuse("tparen",lcParentWkArea)
+        pnError = rierror(-1,"Insert restrict rule violated.","","")
+        IF _triggerlevel=1
+          DO riend WITH llRetVal
+        ENDIF at the end of the highest trigger level
+        SELECT (lcStartArea)
+        RETURN llRetVal
+      endif
+    endif
+    =rireuse("books",lcParentWkArea)
+    IF NOT llRetVal
+      pnError = rierror(-1,"Insert restrict rule violated.","","")
+      IF _triggerlevel=1
+        DO riend WITH llRetVal
+      ENDIF at the end of the highest trigger level
+      SELECT (lcStartArea)
+      RETURN llRetVal
+    ENDIF no parent
+  ENDIF this value was changed
+ENDIF not part of a cascade from "books"
+lcParentWkArea=lcChildWkArea
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Update trigger for" orders
+********************************************************************************
+
+********************************************************************************
+** "Referential integrity insert trigger for" orders
+PROCEDURE __RI_INSERT_orders
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("LIBRARY")
+ENDIF first trigger
+LOCAL lcChildID && child's value to be sought in parent
+LOCAL lcParentWkArea && parentwork area handle returned by riopen
+LOCAL lcChildWkArea && child's work area
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcChildWkArea=SELECT()
+SELECT (lcChildWkArea)
+lcChildID=CARD_NUMBER
+pcChildDBF=dbf(lcChildWkArea)
+pnChildRec=recno(lcChildWkArea)
+pcChildID=lcChildID
+pcChildExpr="CARD_NUMBER"
+lcParentWkArea=riopen("readers","cardnumber")
+IF lcParentWkArea<=0
+  IF _triggerlevel=1
+    DO riend WITH .F.
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN .F.
+ENDIF not able to open the child work area
+pcParentDBF=dbf(lcParentWkArea)
+llRetVal=SEEK(lcChildID,lcParentWkArea)
+pnParentRec=recno(lcParentWkArea)
+if llRetVal and not (isrlocked(pnParentRec, lcParentWkArea) or ;
+  isflocked(lcParentWkArea))
+  if rlock(lcParentWkArea)
+    unlock record pnParentRec in lcParentWkArea
+  else
+    =rireuse("tparen",lcParentWkArea)
+    pnError = rierror(-1,"Insert restrict rule violated.","","")
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  endif
+endif
+=rireuse("readers",lcParentWkArea)
+IF NOT llRetVal
+  pnError = rierror(-1,"Insert restrict rule violated.","","")
+  IF _triggerlevel=1
+    DO riend WITH llRetVal
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN llRetVal
+ENDIF
+SELECT (lcChildWkArea)
+lcChildID=BOOK_NUMBER
+pcChildDBF=dbf(lcChildWkArea)
+pnChildRec=recno(lcChildWkArea)
+pcChildID=lcChildID
+pcChildExpr="BOOK_NUMBER"
+lcParentWkArea=riopen("books","booknumber")
+IF lcParentWkArea<=0
+  IF _triggerlevel=1
+    DO riend WITH .F.
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN .F.
+ENDIF not able to open the child work area
+pcParentDBF=dbf(lcParentWkArea)
+llRetVal=SEEK(lcChildID,lcParentWkArea)
+pnParentRec=recno(lcParentWkArea)
+if llRetVal and not (isrlocked(pnParentRec, lcParentWkArea) or ;
+  isflocked(lcParentWkArea))
+  if rlock(lcParentWkArea)
+    unlock record pnParentRec in lcParentWkArea
+  else
+    =rireuse("tparen",lcParentWkArea)
+    pnError = rierror(-1,"Insert restrict rule violated.","","")
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  endif
+endif
+=rireuse("books",lcParentWkArea)
+IF NOT llRetVal
+  pnError = rierror(-1,"Insert restrict rule violated.","","")
+  IF _triggerlevel=1
+    DO riend WITH llRetVal
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN llRetVal
+ENDIF
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity insert trigger for" orders
+********************************************************************************
+
+********************************************************************************
+** "Referential integrity delete trigger for" readers
+PROCEDURE __RI_DELETE_readers
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("LIBRARY")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcParentWkArea
+LOCAL llDelHeaderarea
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+STORE CARD_NUMBER TO lcParentID,pcParentID
+pcParentExpr="CARD_NUMBER"
+lcChildWkArea=riopen("orders","cardnumber")
+IF lcChildWkArea<=0
+  IF _triggerlevel=1
+    DO riend WITH .F.
+  ENDIF at the end of the highest trigger level
+  RETURN .F.
+ENDIF not able to open the child work area
+pcChildDBF=dbf(lcChildWkArea)
+llRetVal=!SEEK(lcParentID,lcChildWkArea)
+SELECT (lcChildWkArea)
+pnChildRec=recno()
+pcChildID=CARD_NUMBER
+pcChildExpr="CARD_NUMBER"
+IF !llRetVal
+  pnError = rierror(-1,"Delete restrict rule violated.","","")
+ENDIF
+=rireuse("orders",lcChildWkArea)
+IF NOT llRetVal
+  IF _triggerlevel=1
+    DO riend WITH llRetVal
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN llRetVal
+ENDIF
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Delete trigger for" readers
+********************************************************************************
+
+********************************************************************************
+procedure __RI_UPDATE_readers
+** "Referential integrity update trigger for" readers
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("LIBRARY")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcOldParentID && previous parent id value
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcChildID && child's value to be sought in parent
+LOCAL lcOldChildID && old child id value
+LOCAL lcParentWkArea && parentwork area handle returned by riopen
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CARD_NUMBER")
+pcParentID=lcOldParentID
+pcParentExpr="CARD_NUMBER"
+lcParentID=CARD_NUMBER
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("orders")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SET ORDER TO cardnumber IN (lcChildWkArea)
+  llRetVal=!SEEK(lcOldParentID,lcChildWkArea)
+  pnChildRec=recno()
+  pcChildID=CARD_NUMBER
+  pcChildExpr="CARD_NUMBER"
+  IF !llRetVal
+    pnError = rierror(-1,"Update restrict rule violated.","","")
+  ENDIF
+  =rireuse("orders",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Update trigger for" readers
+********************************************************************************
+**__RI_FOOTER!@ Do NOT REMOVE or MODIFY this line!!!! @!__RI_FOOTER**
